@@ -56,6 +56,12 @@ class WBXMLHandler(protocol.Protocol):
 		doc = wb.parse(DataReader(self.d))
 		res_dict = convert_wbelem_to_dict(doc.root)
 		if self.verbose: print "Result:",res_dict
+		if "Status" in res_dict.values()[0]:
+			err_status = int(res_dict.values()[0]["Status"])
+			if err_status != 1:
+				# application-layer error
+				self.deferred.errback("ActiveSync error %d"%err_status)
+				return
 		self.deferred.callback(res_dict)
 
 class ActiveSync:
@@ -106,10 +112,15 @@ class ActiveSync:
 			self.collection_data[collection_id]["key"] = sync_key
 			if "data" not in self.collection_data[collection_id]:
 				self.collection_data[collection_id]["data"] = {}
-			for command in resp["Sync"]["Collections"]["Collection"]["Commands"]:
-				if "Add" in command:
-					server_id = command["Add"]["ServerId"]
-					self.collection_data[collection_id]["data"][server_id] = command["Add"]
+			if "Commands" in resp["Sync"]["Collections"]["Collection"]:
+				for command in resp["Sync"]["Collections"]["Collection"]["Commands"]:
+					if "Add" in command:
+						try:
+							server_id = command["Add"]["ServerId"]
+						except:
+							print "ERROR: Unexpected add format:",command["Add"]
+							continue
+						self.collection_data[collection_id]["data"][server_id] = command["Add"]
 			
 		return self.collection_data[collection_id]["data"]
 
@@ -153,6 +164,7 @@ class ActiveSync:
 	# Supported Requests
 
 	def get_options(self):
+		if self.verbose: print "Options, get URL:",self.get_url(),"Authorization",self.authorization_header()
 		d = self.agent.request(
 		    'OPTIONS',
 		    self.get_url(),
