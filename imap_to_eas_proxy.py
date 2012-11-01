@@ -3,8 +3,9 @@ from twisted.internet import reactor, defer, protocol
 from twisted.cred import portal, checkers, credentials
 from twisted.cred import error as credError
 from zope.interface import implements
-import time, os, random, sys
+import time, os, random, sys, datetime, dateutil
 from twisted.python import log
+from email.Utils import formatdate
 
 from eas_client import *
 
@@ -16,194 +17,9 @@ MAILBOXDELIMITER = "."
 
 log.startLogging(sys.stdout)
 
-#ChandlerMaildir will map directly to a Collection Name
-class ChandlerMaildir(object):
-    
-    def __init__(self, collectionName):
-        
-        #XXX: collectionName redirections Inbox-> In
-        # Sent -> Out
-        # Trash
-        print "passed collectionName: ", collectionName
-        
-        if collectionName.lower() == 'inbox':
-            collectionName = 'In'
-            
-        self.collectionName = collectionName
-        
-        #Instead of list this should be a collection of MailMessage UUIDS
-        self.list = [] #UUID Strings
-        
-        #Cache to undo delete
-        self.deleted = {}
-        
-        #initializeMaildir(path)
-        
-        # Get sidebar
-        sidebar = schema.ns('osaf.app', view).sidebarCollection
-        self.collection = None
-        for coll in sidebar:
-            if coll.displayName == collectionName:
-                self.collection = coll
-                break
-        
-        # Create a collection if non-existent
-        if self.collection is None:
-            self.collection = pim.SmartCollection(itsView=view,
-                displayName=collectionName).setup( )
-            sidebar.add(self.collection)
-                
-        for item in self.collection:
-            if isinstance(item, pim.mail.MailMessageMixin):
-                self.list.append(str(item.itsUUID))
-                
-        # for name in ('cur', 'new'):
-        #    for file in os.listdir(os.path.join(path, name)):
-        #        self.list.append((file, os.path.join(path, name, file)))
-        # self.list.sort()
-        # self.list = [e[1] for e in self.list]
-
-    def appendMessage(self, msgText):
-        raise imap4.MailboxException("ChandlerMaildir.appendMessage not supported")
-        #XXX create a Chandler MailMessage for the given txt and add to the current collection and out collection
-    
-        
-        print "msgText passed to append is of type %s " % type(msgText)
-        
-        if hasattr(msgText, "read"):       
-            raise imap4.MailboxException("Warning read() not yet supported")
-            
-        #XXX this logic could be moved to deferreds to make async. Need to think about this more
-                
-        mailMessage = message.messageTextToKind(view, msgText)   
-        self.collection.add(mailMessage)
-        
-        self.list.append(str(mailMessage.itsUUID)) 
-         
-        view.commit()
-        
-        #The value returned is ignored by the callback 
-        return defer.succeed(None)
-            
-    def deleteMessage(self, index):
-        """Delete a particular message.
-
-        This must not change the number of messages in this mailbox.  Further
-        requests for the size of deleted messages should return 0.  Further
-        requests for the message itself may raise an exception.
-
-        @type index: C{int}
-        @param index: The number of the message to delete.
-        """
-        raise imap4.MailboxException("ChandlerMaildir.deleteMessage not supported")
-        
-        """Delete a message
-
-        This only moves a message to the .Trash/ subfolder,
-        so it can be undeleted by an administrator.
-        """
-        #trashFile = os.path.join(
-        #    self.path, '.Trash', 'cur', os.path.basename(self.list[i])
-        #)
-        #os.rename(self.list[i], trashFile)
-        #self.deleted[self.list[i]] = trashFile
-        #self.list[i] = 0
-
-     
-    def undeleteMessages(self):
-        """Undelete any messages possible.
-
-        If a message can be deleted it, it should return it its original
-        position in the message sequence and retain the same UIDL.
-        """
-
-        raise imap4.MailboxException("ChandlerMaildir.undeleteMessages not supported")
-        """Undelete any deleted messages it is possible to undelete
-
-        This moves any messages from .Trash/ subfolder back to their
-        original position, and empties out the deleted dictionary.
-        """
-        #for (real, trash) in self.deleted.items():
-        #    try:
-        #        os.rename(trash, real)
-        #    except OSError, (err, estr):
-        #        import errno
-        #        # If the file has been deleted from disk, oh well!
-        #        if err != errno.ENOENT:
-        #            raise
-        #        # This is a pass
-        #    else:
-        #        try:
-        #            self.list[self.list.index(0)] = real
-        #        except ValueError:
-        #            self.list.append(real)
-        #self.deleted.clear()
-        
-    def getMessage(self, index):
-        """Return an open file-pointer to a message
-        """
-        uuid = UUID(self.list[i])
-        item = view[uuid]
-        return item.rfc2282Message.getInputStream()
-        
-        # return open(self.list[i])
-
-    
-    def getUidl(self, index):
-        """Return a unique identifier for a message
-
-        This is done using the basename of the filename.
-        It is globally unique because this is how Maildirs are designed.
-        """
-        return self.list[i]
-        
-        # Returning the actual filename is a mistake.  Hash it.
-        #XXX this just returns the UUID of the MailMessage Item
-        #base = os.path.basename(self.list[i])
-        #return md5.md5(base).hexdigest()
-
-    def _getRfc2822Message(self, uuid):
-        uuid = UUID(uuid)
-        item = view[uuid]
-        return binaryToData(item.rfc2822Message)
-    
-    def listMessages(self, index=None):
-        """Return a list of lengths of all files in new/ and cur/
-        """
-        
-        if index is None:
-            ret = []
-            for uuid in self.list:
-                if uuid:
-                    ret.append(len(self._getRfc2822Message(uuid)))
-                else:
-                    ret.append(0)
-            return ret
-        else:
-            uuid = self.list[index]
-            return uuid and len(self._getRfc2822Message(uuid)) or 0
-
-
-    
-    
-    def sync(self):
-        """Perform checkpointing.
-
-        This method will be called to indicate the mailbox should attempt to
-        clean up any remaining deleted messages.
-        """
-        pass
-        
-    def __iter__(self):
-        "iterates through the full paths of all messages in the maildir"
-        return iter(self.list)
-
-    def __len__(self):
-        return len(self.list)
-
-    def __getitem__(self, i):
-        return self.list[i]
-
+global_per_user_cache = {
+    "mailbox": {}
+}
 
 class IMAPMailbox(object):
     implements(imap4.IMailbox)
@@ -275,6 +91,21 @@ class IMAPMailbox(object):
     def getUIDValidity(self):
         return self.metadata['uidvalidity']
 
+    def _seqMessageSetToSeqDict(self, messageSet):
+        """
+        take a MessageSet object containing message sequence numbers,
+        and return a dictionary mapping sequence number to filenames
+        """
+        # if messageSet.last is None, it means 'the end', and needs to
+        # be set to a sane high number before attempting to iterate
+        # through the MessageSet
+        print "In _seqMessageSetToSeqDict", messageSet
+        if not messageSet.last: messageSet.last = len(self.dataCache)-1
+        seqMap = {}
+        for messageNo in messageSet:
+            seqMap[messageNo] = self.dataCache.keys()[messageNo-1]
+        return seqMap
+
     def _uidMessageSetToSeqDict(self, messageSet):
         """
         take a MessageSet object containing UIDs, and return
@@ -314,9 +145,13 @@ class IMAPMailbox(object):
                 else:
                     self.metadata['flags'][msg_uid].append(r'\Unseen')
                 self.metadata['uidnext'] = msg_uid+1
+        for listener in self.listeners:
+            listener.newMessages(self.getMessageCount(), None)
 
     def sync_err(self, err_val):
-        print "SYNC ERR",err_val
+        print "SYNC ERR",err_val.value
+        if err_val.value == "ActiveSync error 135":
+            print "RETRY REQUEST..."
         return None
 
 
@@ -324,14 +159,17 @@ class IMAPMailbox(object):
         return self.fetch(messages, uid)
     def fetch(self, messages, uid):
         print "FETCH",messages,uid
-        assert uid == 1
 
         if self.dataCache == None:
             d = self.fill_data_cache()
             d.addCallback(self.fetch_callback, messages, uid)
             return d
 
-        messagesToFetch = self._uidMessageSetToSeqDict(messages)
+        if uid:
+            messagesToFetch = self._uidMessageSetToSeqDict(messages)
+        else:
+            messagesToFetch = self._seqMessageSetToSeqDict(messages)
+
         print "TO FETCH",messagesToFetch
         fetch_res = []
         for seq, server_id in messagesToFetch.items():
@@ -405,13 +243,6 @@ class IMAPMailbox(object):
         "remove all messages marked for deletion"
         removed = []
         print "In expunge"
-        #XXX: Just use the UUID's
-        for filename in self.maildir:
-            uid = self.metadata['uids'].get(os.path.basename(filename))
-            if r"\Deleted" in self.metadata['flags'].get(uid, []):
-                self.maildir.deleteMessage(filename)
-                # you could also throw away the metadata here
-                removed.append(uid)
         return removed
 
     def destroy(self):
@@ -426,39 +257,54 @@ class EASMessagePart(object):
         self.data = str(self.message)
 
     def getHeaders(self, negate, *names):
-        print "GET HEADERS"
+        print "GET HEADERS",self.info["ApplicationData"], names, negate
         """
         Return a dict mapping header name to header value. If *names
         is empty, match all headers; if negate is true, return only
         headers _not_ listed in *names.
         """
-        if not names: names = self.message.keys()
+        available_headers = ["From", "To", "Date", "Subject"]
+        header_translation = {"Date":"DateReceived"}
+        if not names: names = available_headers
         headers = {}
         if negate:
-            for header in self.message.keys():
+            for header in available_headers:
                 if header.upper() not in names:
-                    headers[header.lower()] = self.message.get(header, '')
+                    try:
+                        headers[header.lower()] = self.info["ApplicationData"][header_translation[header]]
+                    except:
+                        headers[header.lower()] = self.info["ApplicationData"][header]
         else:
-            for name in names:
-                headers[name.lower()] = self.message.get(name, '')
+            for header in available_headers:
+                if header.upper() in names:
+                    try:
+                        headers[header.lower()] = self.info["ApplicationData"][header_translation[header]]
+                    except:
+                        headers[header.lower()] = self.info["ApplicationData"][header]
+        print "Return headers",headers
         return headers
 
     def getBodyFile(self):
         "return a file-like object containing this message's body"
         print "GET DATA"
-        bodyData = str(self.message.get_payload())
+        bodyData = "" # TODO
         return StringIO(bodyData)
 
     def getSize(self):
-        return len(self.data)
+        return self.info["ApplicationData"]["Body"]["EstimatedDataSize"]
 
     def getInternalDate(self):
-        return self.message.get('Date', '')
+        date = datetime.datetime.strptime(self.info["ApplicationData"]["DateReceived"], '%Y-%m-%dT%H:%M:%S.%fZ')
+        #utc = utc.replace(tzinfo=from_zone)
+        print "DATE",date
+        return formatdate(time.mktime(date.timetuple()))
 
     def isMultipart(self):
-        return self.message.is_multipart()
+        return False
+        #return self.message.is_multipart()
 
     def getSubPart(self, partNo):
+        print "GET PART",partNo
         return EASMessagePart(self.message.get_payload(partNo))
 
 class EASMessage(EASMessagePart):
@@ -496,10 +342,13 @@ class IMAPUserAccount(object):
     def __init__(self, async):
         self.async = async
         self.did_provision = False
-        self.mailboxCache = None
 
     def listResponse(self, list_result):
-        if self.mailboxCache == None: self.mailboxCache = {}
+        global global_per_user_cache
+        if self.async.username not in global_per_user_cache["mailbox"]:
+            global_per_user_cache["mailbox"][self.async.username] = {}
+        #acceptable_folder_types = [6, 5, 1, 3, 4, 2] # figure out what these are (EAS)
+        acceptable_folder_types = [1, 2]
         for folder_id, folder_info in list_result.iteritems():
             folder_path = folder_info["DisplayName"]
             parent_id = folder_info["ParentId"]
@@ -507,10 +356,11 @@ class IMAPUserAccount(object):
                 parent_info = list_result[parent_id]
                 folder_path = parent_info["DisplayName"]+MAILBOXDELIMITER+folder_path
                 parent_id = int(parent_info["ParentId"])
+
+            if int(folder_info["Type"]) in acceptable_folder_types and folder_path not in global_per_user_cache["mailbox"][self.async.username]:
+                global_per_user_cache["mailbox"][self.async.username][folder_path] = IMAPMailbox(folder_path, folder_info, self.async)
         
-            self.mailboxCache[folder_path] = IMAPMailbox(folder_path, folder_info, self.async)
-        
-        return self.mailboxCache.items()
+        return global_per_user_cache["mailbox"][self.async.username].items()
 
     def provision_result(self, provision_success):
         return self.listMailboxes(None, None)
@@ -527,8 +377,8 @@ class IMAPUserAccount(object):
         return []
 
     def listMailboxes(self, ref, wildcard):
-        if self.mailboxCache != None:
-            return self.mailboxCache.items()
+        if self.async.username in global_per_user_cache["mailbox"]:
+            return global_per_user_cache["mailbox"][self.async.username].items()
         d = self.async.folder_sync()
         d.addCallback(self.listResponse)
         d.addErrback(self.listError)
@@ -549,13 +399,13 @@ class IMAPUserAccount(object):
         if create:
             raise imap4.MailboxException("Create not yet supported.")
 
-        if self.mailboxCache != None:
-            if path in self.mailboxCache:
-                return self.mailboxCache[path]
-            for mbpath in self.mailboxCache.keys():
+        if self.async.username in global_per_user_cache["mailbox"]:
+            if path in global_per_user_cache["mailbox"][self.async.username]:
+                return global_per_user_cache["mailbox"][self.async.username][path]
+            for mbpath in global_per_user_cache["mailbox"][self.async.username].keys():
                 # case insensitive search
                 if path.lower() == mbpath.lower():
-                    return self.mailboxCache[mbpath]
+                    return global_per_user_cache["mailbox"][self.async.username][mbpath]
         d = self.async.folder_sync()
         d.addCallback(self.listResponse)
         d.addCallback(self._getMailbox_callback, path, create)
