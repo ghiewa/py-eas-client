@@ -53,7 +53,8 @@ class WBXMLHandler(protocol.Protocol):
 	def connectionLost(self, reason):
 		if self.verbose: print "FINISHED LOADING", self.d.encode("hex")
 		if not len(self.d):
-			self.deferred.errback("No data received")
+			# this is valid from sync command
+			self.deferred.callback(None)
 			return
 		wb = wbxmlparser()
 		doc = wb.parse(DataReader(self.d))
@@ -110,6 +111,9 @@ class ActiveSync(object):
 		return resp["ItemOperations"]["Response"]["Fetch"]
 
 	def process_sync(self, resp):
+		if not resp:
+			return self.collection_data[collection_id]["data"]
+			
 		sync_key = resp["Sync"]["Collections"]["Collection"]["SyncKey"]
 		collection_id = resp["Sync"]["Collections"]["Collection"]["CollectionId"]
 		
