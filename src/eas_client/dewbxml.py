@@ -61,6 +61,7 @@ _applications = {
             'dtd': r'activesync',
             'elements': [
                 { # Page 0 - AirSync
+                    "name":"AirSync",
                     0x05: ('Sync', None),
                     0x06: ('Responses', None),
                     0x07: ('Add', None),
@@ -96,6 +97,7 @@ _applications = {
                     0x29: ('HeartbeatInterval', None),
                 },
                 { # Page 1 - Contacts
+                    "name":"Contacts",
                     0x05: ('Anniversary', None),
                     0x06: ('AssistantName', None),
                     0x07: ('AssistantPhoneNumber', None),
@@ -152,6 +154,7 @@ _applications = {
                     0x3e: ('WeightedRank', None),
                 },
                 { # Page 2 - Email
+                    "name":"Email",
                     0x0f: ('DateReceived', None),
                     0x11: ('DisplayTo', None),
                     0x12: ('Importance', None),
@@ -203,6 +206,7 @@ _applications = {
                 { # Page 4 - Calendar
                 },
                 { # Page 5 - Move
+                    "name":"Move",
                     0x05: ('MoveItems', None),
                     0x06: ('Move', None),
                     0x07: ('SrcMsgId', None),
@@ -215,6 +219,7 @@ _applications = {
                 { # Page 6 - GetItemEstimate
                 },
                 { # Page 7 - FolderHierarchy
+                    "name":"FolderHierarchy",
                     0x07: ('DisplayName', None),
                     0x08: ('ServerId', None),
                     0x09: ('ParentId', None),
@@ -244,6 +249,7 @@ _applications = {
                 { # Page 13 - Ping
                 },
                 { # Page 14 - Provision
+                    "name":"Provision",
                     0x05: ('Provision', None),
                     0x06: ('Policies', None),
                     0x07: ('Policy', None),
@@ -303,6 +309,7 @@ _applications = {
                 { # Page 16 - GAL
                 },
                 { # Page 17 - AirSyncBase
+                    "name":"AirSyncBase",
                     0x05: ('BodyPreference', None),
                     0x06: ('Type', None),
                     0x07: ('TruncationSize', None),
@@ -331,10 +338,33 @@ _applications = {
                 { # Page 19
                 },
                 { # Page 20
+                    "name":"ItemOperations",
+                    0x05: ('ItemOperations', None),
+                    0x06: ('Fetch', None),
+                    0x07: ('Store', None),
+                    0x08: ('Options', None),
+                    0x09: ('Range', None),
+                    0x0a: ('Total', None),
+                    0x0b: ('Properties', None),
+                    0x0c: ('Data', None),
+                    0x0d: ('Status', None),
+                    0x0e: ('Response', None),
+                    0x0f: ('Version', None),
+                    0x10: ('Schema', None),
+                    0x11: ('Part', None),
+                    0x12: ('EmptyFolderContents', None),
+                    0x13: ('DeleteSubFolders', None),
+                    0x14: ('UserName', None),
+                    0x15: ('Password', None),
+                    0x16: ('Move', None),
+                    0x17: ('DstFldId', None),
+                    0x18: ('ConversationId', None),
+                    0x19: ('MoveAlways', None),
                 },
                 { # Page 21
                 },
                 { # Page 22 - Email2
+                    "name":"Email2",
                     0x05: ('UmCallerID', None),
                     0x06: ('UmUserNotes', None),
                     0x07: ('UmAttDuration', None),
@@ -397,7 +427,7 @@ class wbxmldocument(object):
         self.root = root
         root.parent = self
 
-    def tobytes(self, restrict_page_num=None):
+    def tobytes(self):
         version_major = int(self.version.split(".")[0])
         version_minor = int(self.version.split(".")[1])
 
@@ -415,7 +445,7 @@ class wbxmldocument(object):
 
         assert len(self.__stringtable) == 0
 
-        return pack("BBBB", ((version_major-1)<<4)|version_minor, enc_token, chars_token, len(self.__stringtable))+self.root.tobytes(enc_token, restrict_page_num=restrict_page_num)
+        return pack("BBBB", ((version_major-1)<<4)|version_minor, enc_token, chars_token, len(self.__stringtable))+self.root.tobytes(enc_token)
 
     @property
     def stringtable(self):
@@ -438,9 +468,10 @@ class wbxmldocument(object):
 class wbxmlelement(object):
     r'''Class for WBXML DOM elements.
     '''
-    def __init__(self, name = None, attributes = {}):
+    def __init__(self, name = None, attributes = {}, page_num=None):
         r'''Creates a new WBXML DOM element object.
         '''
+        self.page_num = page_num
         self.parent = None
         self.name = name
         self.attributes = dict(attributes)
@@ -465,21 +496,24 @@ class wbxmlelement(object):
         children = ''
         closetag = ''
 
+        start_name = self.name
+        if self.page_num != None and "name" in _applications[0x1]["elements"][self.page_num]:
+            start_name = _applications[0x1]["elements"][self.page_num]["name"]+":"+start_name
+
         if len(self.children) > 0:
             closebracket = '>\n'
-            closetag = ident + '</' + self.name + '>'
+            closetag = ident + '</' + start_name + '>'
             for child in self.children:
                 children += child.tostring(level + 1)
         else:
             closebracket = ' />'
+        return ident + '<' + start_name + attributes + closebracket + children + closetag + '\n'
 
-        return ident + '<' + self.name + attributes + closebracket + children + closetag + '\n'
-
-    def tobytes(self, enc_token, restrict_page_num=None):
+    def tobytes(self, enc_token):
         tag_val = 0
         tag_pagenum = 0
         for page_num in range(len(_applications[enc_token]["elements"])):
-            if restrict_page_num != None and page_num != restrict_page_num:
+            if self.page_num != None and page_num != self.page_num:
                 continue
             for token,tokeninfo in _applications[enc_token]["elements"][page_num].iteritems():
                 if tokeninfo[0] == self.name:
@@ -493,7 +527,7 @@ class wbxmlelement(object):
         byte_data = pack("BBB", 0, tag_pagenum, tag_val)
         assert len(self.attributes) == 0
         for child in self.children:
-            byte_data += child.tobytes(enc_token, restrict_page_num=tag_pagenum)
+            byte_data += child.tobytes(enc_token)
         byte_data += pack("B", 1)
         return byte_data
 
@@ -507,23 +541,28 @@ class wbxmlelement(object):
 class wbxmlstring(object):
     r'''Class for text elements.
     '''
-    def __init__(self, value):
+    def __init__(self, value, opaque=False):
         r'''Creates a new text element object from a string.
         '''
         self.__value = value
+        self.is_opaque = opaque
 
     def __str__(self):
         r'''Converts this text element to string.
         '''
         return self.tostring(0)
 
-    def tobytes(self, enc_token, restrict_page_num=None):
-        return pack("B", 3)+self.__value+pack("B",0)
+    def tobytes(self, enc_token):
+        if self.is_opaque:
+            return pack("BB", OPAQUE, len(self.__value))+self.__value
+        return pack("B", STR_I)+self.__value+pack("B",0)
 
     def tostring(self, level):
         r'''Converts this text element to string, idented to the given ident
             level.
         '''
+        if self.is_opaque:
+            return level * '  ' + "OPAQUE: "+self.__value.encode("hex") + '\n'
         return level * '  ' + self.__value + '\n'
 
 

@@ -6,7 +6,7 @@ from xml.dom.minidom import getDOMImplementation
 import base64, urlparse, StringIO, uuid, sys
 from urllib import urlencode
 from dewbxml import wbxmlparser, wbxmlreader, wbxmldocument, wbxmlelement, wbxmlstring
-from activesync_producers import WBXMLProducer, FolderSyncProducer, SyncProducer, ProvisionProducer
+from activesync_producers import WBXMLProducer, FolderSyncProducer, SyncProducer, ProvisionProducer, ItemOperationsProducer
 
 version = "1.0"
 
@@ -52,6 +52,9 @@ class WBXMLHandler(protocol.Protocol):
 		self.d += data
 	def connectionLost(self, reason):
 		if self.verbose: print "FINISHED LOADING", self.d.encode("hex")
+		if not len(self.d):
+			self.deferred.errback("No data received")
+			return
 		wb = wbxmlparser()
 		doc = wb.parse(DataReader(self.d))
 		res_dict = convert_wbelem_to_dict(doc.root)
@@ -64,7 +67,7 @@ class WBXMLHandler(protocol.Protocol):
 				return
 		self.deferred.callback(res_dict)
 
-class ActiveSync:
+class ActiveSync(object):
 	def __init__(self, domain, username, pw, server, use_ssl, policy_key=0, server_version="14.0", device_type="iPhone", device_id=None, verbose=False):
 		self.use_ssl = use_ssl
 		self.domain = domain
@@ -81,6 +84,9 @@ class ActiveSync:
 		self.verbose = verbose
 		self.collection_data = {}
 		self.agent = Agent(reactor)
+		self.operation_queue = defer.DeferredQueue()
+		self.queue_deferred = self.operation_queue.get()
+		self.queue_deferred.addCallback(self.queue_full)
 
 	# Response processing
 
@@ -100,6 +106,9 @@ class ActiveSync:
 		response.deliverBody(WBXMLHandler(d, self.verbose))
 		return d
 
+	def process_fetch(self, resp):
+		return resp["ItemOperations"]["Response"]["Fetch"]
+
 	def process_sync(self, resp):
 		sync_key = resp["Sync"]["Collections"]["Collection"]["SyncKey"]
 		collection_id = resp["Sync"]["Collections"]["Collection"]["CollectionId"]
@@ -114,6 +123,7 @@ class ActiveSync:
 				self.collection_data[collection_id]["data"] = {}
 			if "Commands" in resp["Sync"]["Collections"]["Collection"]:
 				for command in resp["Sync"]["Collections"]["Collection"]["Commands"]:
+					if self.verbose: print "PROCESS COMMAND",command
 					if "Add" in command:
 						try:
 							server_id = command["Add"]["ServerId"]
@@ -160,6 +170,35 @@ class ActiveSync:
 	def authorization_header(self):
 		return "Basic "+base64.b64encode("%s\%s:%s"%(self.domain.lower(),self.username.lower(),self.password))
 
+	# Request queueing
+
+	def queue_full(self, next_request):
+		if self.verbose: print "Queue full",next_request
+		method = next_request[0]
+		retd = next_request[-1]
+		args = next_request[1:-2]
+		kwargs = next_request[-2]
+		d = method(*args, **kwargs)
+		d.addCallback(self.request_finished, retd)
+		d.addErrback(self.request_failed, retd)
+
+	def request_finished(self, obj, return_deferred):
+		if self.verbose: print "Request finished, resetting queue",obj,return_deferred
+		self.queue_deferred = self.operation_queue.get()
+		self.queue_deferred.addCallback(self.queue_full)
+		return_deferred.callback(obj)
+
+	def request_failed(self, failure, return_deferred):
+		if self.verbose: print "Request failed, resetting queue",failure,return_deferred
+		self.queue_deferred = self.operation_queue.get()
+		self.queue_deferred.addCallback(self.queue_full)
+		return_deferred.errback(failure)
+
+	def add_operation(self, *operation_method_and_args, **kwargs):
+		if self.verbose: print "Add operation",operation_method_and_args
+		ret_d = defer.Deferred()
+		self.operation_queue.put(operation_method_and_args+(kwargs,ret_d,))
+		return ret_d
 
 	# Supported Requests
 
@@ -185,7 +224,7 @@ class ActiveSync:
 		    			'MS-ASProtocolVersion': [self.server_version],
 		    			'X-MS-PolicyKey': [str(self.policy_key)],
 		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
-		    ProvisionProducer(policyKey))
+		    ProvisionProducer(policyKey, verbose=self.verbose))
 		d.addCallback(self.wbxml_response)
 		d.addCallback(self.process_policy_key)
 		d.addCallback(self.acknowledge_result)
@@ -202,7 +241,7 @@ class ActiveSync:
 		    			'MS-ASProtocolVersion': [self.server_version],
 		    			'X-MS-PolicyKey': [str(self.policy_key)],
 		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
-		    ProvisionProducer())
+		    ProvisionProducer(verbose=self.verbose))
 		d.addCallback(self.wbxml_response)
 		d.addCallback(self.process_policy_key)
 		d.addCallback(self.acknowledge)
@@ -221,13 +260,16 @@ class ActiveSync:
 		    			'MS-ASProtocolVersion': [self.server_version],
 		    			'X-MS-PolicyKey': [str(self.policy_key)],
 		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
-		    FolderSyncProducer(sync_key))
+		    FolderSyncProducer(sync_key, verbose=self.verbose))
 		d.addCallback(self.wbxml_response)
 		d.addCallback(self.process_folder_sync)
 		d.addErrback(self.activesync_error)
 		return d
 
-	def sync(self, collectionId, sync_key=0):
+	def sync(self, collectionId, sync_key=0, get_body=False):
+		if sync_key == 0 and collectionId in self.collection_data:
+			sync_key = self.collection_data[collectionId]["key"]
+
 		sync_url = self.add_parameters(self.get_url(), {"Cmd":"Sync", "User":self.username, "DeviceId":self.device_id, "DeviceType":self.device_type})
 		d = self.agent.request(
 		    'POST',
@@ -237,8 +279,24 @@ class ActiveSync:
 		    			'MS-ASProtocolVersion': [self.server_version],
 		    			'X-MS-PolicyKey': [str(self.policy_key)],
 		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
-		    SyncProducer(collectionId, sync_key))
+		    SyncProducer(collectionId, sync_key, get_body, verbose=self.verbose))
 		d.addCallback(self.wbxml_response)
 		d.addCallback(self.process_sync)
+		d.addErrback(self.activesync_error)
+		return d
+
+	def fetch(self, collectionId, serverId, fetchType, mimeSupport=0):
+		fetch_url = self.add_parameters(self.get_url(), {"Cmd":"ItemOperations", "User":self.username, "DeviceId":self.device_id, "DeviceType":self.device_type})
+		d = self.agent.request(
+		    'POST',
+		    fetch_url,
+		    Headers({'User-Agent': ['python-EAS-Client %s'%version], 
+		    			'Authorization': [self.authorization_header()],
+		    			'MS-ASProtocolVersion': [self.server_version],
+		    			'X-MS-PolicyKey': [str(self.policy_key)],
+		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
+		    ItemOperationsProducer("Fetch", collectionId, serverId, fetchType, mimeSupport, verbose=self.verbose))
+		d.addCallback(self.wbxml_response)
+		d.addCallback(self.process_fetch)
 		d.addErrback(self.activesync_error)
 		return d
