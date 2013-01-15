@@ -79,7 +79,7 @@ class ItemOperationsProducer(WBXMLProducer):
 						("MIMESupport", str(mimeSupport), 0),
 						("BodyPreference", [
 							("Type", str(fetch_type)),
-							("TruncationSize", str(32768))
+							("TruncationSize", str(512))
 						], 17)
 					]),
 				]))

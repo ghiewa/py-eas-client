@@ -6,6 +6,7 @@ from zope.interface import implements
 import time, os, random, sys, datetime, dateutil, pickle
 from twisted.python import log
 from email.Utils import formatdate
+from email.parser import HeaderParser
 
 from eas_client import *
 
@@ -61,7 +62,6 @@ class EASIMAPMailbox(object):
         return d
 
     def getMessageCount(self, ignore=None):
-        print "Getting message count", self.collectionName
         assert self.dataCache != None # should have been filled in by account.select()
         return len(self.dataCache)
 
@@ -138,6 +138,7 @@ class EASIMAPMailbox(object):
                     self.metadata['flags'][msg_uid].append(r'\Unseen')
                 self.metadata['uidnext'] = msg_uid+1
         for listener in self.listeners:
+            print "NOTIFY LISTENERS OF MESSAGE COUNT",self.getMessageCount()
             listener.newMessages(self.getMessageCount(), None)
 
     def sync_err(self, err_val):
@@ -195,13 +196,25 @@ class EASIMAPMailbox(object):
                     dlist.append(msg_object.fillDataCache())
             d = defer.DeferredList(dlist)
             print "DLIST",dlist
-        else:
+        elif len(uncached_server_ids) < 10:
             # use multi-fetch
             print "DO MULTIFETCH",uncached_server_ids
-            d = self.activesync.add_operation(self.activesync.fetch, self.folderinfo["ServerId"], uncached_server_ids, 1)
+            d = self.activesync.add_operation(self.activesync.fetch, self.folderinfo["ServerId"], uncached_server_ids, 4, mimeSupport=2)
             d.addCallback(self.multifetch_result)
             d.addErrback(self.sync_err)
-        
+        else:
+            dlist = []
+            for id_idx in range(0,len(uncached_server_ids),10):
+                # use multi-fetch
+                print "DO MULTIFETCH",uncached_server_ids[id_idx:id_idx+10]
+                md = self.activesync.add_operation(self.activesync.fetch, self.folderinfo["ServerId"], uncached_server_ids[id_idx:id_idx+10], 4, mimeSupport=2)
+                md.addCallback(self.multifetch_result)
+                md.addErrback(self.sync_err)
+                dlist.append(md)
+            d = defer.DeferredList(dlist)
+            print "DLIST",dlist
+            
+
         d.addCallback(self.fetch_finished, fetch_res)
         
         #reactor.callLater(0, d.callback, None)
@@ -283,9 +296,9 @@ class EASIMAPMailbox(object):
 class EASMessagePart(object):
     implements(imap4.IMessagePart)
 
-    def __init__(self, mimeMessage):
-        self.message = mimeMessage
-        self.data = str(self.message)
+    def __init__(self):
+        self.parsed_message = None
+        self.data = None
 
     def getHeaders(self, negate, *names):
         """
@@ -294,28 +307,43 @@ class EASMessagePart(object):
         headers _not_ listed in *names.
         """
         available_headers = ["From", "To", "Date", "Subject"]
+        if self.parsed_message:
+            available_headers.extend(self.parsed_message.keys())
+
         header_translation = {"Date":"DateReceived"}
-        if not names: names = available_headers
+        if not names: 
+            names = available_headers
         headers = {}
         if negate:
             for header in available_headers:
                 if header.upper() not in names:
-                    try:
+                    if header in header_translation and header_translation[header] in self.info["ApplicationData"]:
                         headers[header.lower()] = self.info["ApplicationData"][header_translation[header]]
-                    except:
+                    elif header in self.info["ApplicationData"]:
                         headers[header.lower()] = self.info["ApplicationData"][header]
+                    elif self.parsed_message and self.parsed_message.has_key(header):
+                        headers[header.lower()] = self.parsed_message.get(header, "")
         else:
             for header in available_headers:
                 if header.upper() in names:
-                    try:
+                    if header in header_translation and header_translation[header] in self.info["ApplicationData"]:
                         headers[header.lower()] = self.info["ApplicationData"][header_translation[header]]
-                    except:
+                    elif header in self.info["ApplicationData"]:
                         headers[header.lower()] = self.info["ApplicationData"][header]
-        #print "GET HEADERS",self.info["ApplicationData"], names, negate," RETURN: ",headers
+                    elif self.parsed_message and self.parsed_message.has_key(header):
+                        headers[header.lower()] = self.parsed_message.get(header, "")
+
+        print "GET HEADERS",self.info["ApplicationData"].keys(), names, negate," RETURN: ",headers
         return headers
 
     def sync_result(self, sync_result):
         self.data = sync_result["Properties"]["Body"]["Data"]
+        print "MSG SYNC RESULT",sync_result["Properties"]["Body"]
+        if int(sync_result["Properties"]["Body"]["Type"]) == 4: # mime type
+            # process headers
+            hp = HeaderParser()
+            self.parsed_message = hp.parsestr(self.data, True)
+
 
     def sync_err(self, err_val):
         print "EMAIL SYNC ERR",err_val.value
@@ -327,15 +355,14 @@ class EASMessagePart(object):
 
     def fillDataCache(self):
         print "FILLING DATA CACHE",self.collection_id,self.info["ServerId"]
-        #d = self.activesync.add_operation(self.activesync.fetch, self.collection_id, self.info["ServerId"], 4, mimeSupport=2)
-        d = self.activesync.add_operation(self.activesync.fetch, self.collection_id, self.info["ServerId"], 1)
+        d = self.activesync.add_operation(self.activesync.fetch, self.collection_id, self.info["ServerId"], 4, mimeSupport=2)
         d.addCallback(self.sync_result)
         d.addErrback(self.sync_err)
         return d
 
     def getBodyFile(self):
         "return a file-like object containing this message's body"
-        print "GET DATA",self.info["ServerId"]
+        print "GET DATA",self.info["ServerId"],self.info["ApplicationData"]["Subject"]
         assert self.data != None
         return StringIO(self.data)
 
@@ -345,7 +372,6 @@ class EASMessagePart(object):
     def getInternalDate(self):
         date = datetime.datetime.strptime(self.info["ApplicationData"]["DateReceived"], '%Y-%m-%dT%H:%M:%S.%fZ')
         #utc = utc.replace(tzinfo=from_zone)
-        print "DATE",date
         return formatdate(time.mktime(date.timetuple()))
 
     def isMultipart(self):
@@ -388,7 +414,7 @@ class IMAPServerProtocol(imap4.IMAP4Server):
             print "SERVER:", line
 
     def spew_body(self, part, id, msg, _w=None, _f=None):
-        print "SPEW BODY"
+        print "SPEW BODY",part,id,msg
         return imap4.IMAP4Server.spew_body(self, part, id, msg, _w, _f)
 
 class IMAPUserAccount(object):
@@ -520,7 +546,7 @@ class EASCredentialsChecker(object):
 
     def requestAvatarId(self, credentials):
         self.activesync = activesync.ActiveSync(self.domain, credentials.username, 
-            credentials.password, self.server, True, device_id=self.device_id, verbose=False)
+            credentials.password, self.server, True, device_id=self.device_id, verbose=True)
         d = self.activesync.add_operation(self.activesync.get_options)
         d.addCallback(self.option_result, credentials.username)
         d.addErrback(self.option_err)
