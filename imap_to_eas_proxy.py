@@ -3,7 +3,7 @@ from twisted.internet import reactor, defer, protocol
 from twisted.cred import portal, checkers, credentials
 from twisted.cred import error as credError
 from zope.interface import implements
-import time, os, random, sys, datetime, dateutil
+import time, os, random, sys, datetime, dateutil, pickle
 from twisted.python import log
 from email.Utils import formatdate
 
@@ -11,7 +11,6 @@ from eas_client import *
 
 from cStringIO import StringIO
 import email
-
 
 MAILBOXDELIMITER = "."
 
@@ -24,10 +23,10 @@ global_per_user_cache = {
 class EASIMAPMailbox(object):
     implements(imap4.IMailbox)
 
-    def __init__(self, path, info, async):
+    def __init__(self, path, info, activesync):
         self.collectionName = path.split(os.sep)[-1]
         print "Creating maildir", self.collectionName
-        self.async = async
+        self.activesync = activesync
         self.folderinfo = info
         self.metadata = {}
         self.listeners = []
@@ -56,7 +55,7 @@ class EASIMAPMailbox(object):
         return [r'\Seen', r'\Unseen']
 
     def fill_data_cache(self):
-        d = self.async.add_operation(self.async.sync, self.folderinfo["ServerId"])
+        d = self.activesync.add_operation(self.activesync.sync, self.folderinfo["ServerId"])
         d.addCallback(self.sync_result)
         d.addErrback(self.sync_err)
         return d
@@ -155,6 +154,15 @@ class EASIMAPMailbox(object):
         print "FETCH FINISHED",ignore,fetch_res
         return fetch_res
 
+    def multifetch_result(self, result):
+        for fetch_obj in result:
+            mfetch_result = fetch_obj["Fetch"]
+            server_id = mfetch_result["ServerId"]
+            #print "MULTIFETCH RESULT ID",server_id
+            msg_obj = self.messageObjects[server_id]
+            msg_obj.sync_result(mfetch_result)
+
+
     def fetch(self, messages, uid):
         print "IMAP MBOX FETCH",messages,uid
 
@@ -169,20 +177,33 @@ class EASIMAPMailbox(object):
             messagesToFetch = self._seqMessageSetToSeqDict(messages)
 
         fetch_res = []
+        uncached_server_ids = []
         for seq, server_id in messagesToFetch.items():
             uid = self.metadata["uids"][server_id]
             flags = self.metadata['flags'][uid]
             if server_id not in self.messageObjects:
-                self.messageObjects[server_id] =  EASMessage(self.dataCache[server_id], uid, flags, self.async, self.folderinfo["ServerId"])
+                self.messageObjects[server_id] =  EASMessage(self.dataCache[server_id], uid, flags, self.activesync, self.folderinfo["ServerId"])
+            if self.messageObjects[server_id].data == None:
+                uncached_server_ids.append(server_id)
             fetch_res.append((seq, self.messageObjects[server_id]))
         print "Fetch res",fetch_res,"collecting messages"
-        dlist = []
-        for seqno, msg_object in fetch_res:
-            if msg_object.data == None:
-                dlist.append(msg_object.fillDataCache())
-        d = defer.DeferredList(dlist)
+        d = None
+        if len(uncached_server_ids) <= 3:
+            dlist = []
+            for seqno, msg_object in fetch_res:
+                if msg_object.data == None:
+                    dlist.append(msg_object.fillDataCache())
+            d = defer.DeferredList(dlist)
+            print "DLIST",dlist
+        else:
+            # use multi-fetch
+            print "DO MULTIFETCH",uncached_server_ids
+            d = self.activesync.add_operation(self.activesync.fetch, self.folderinfo["ServerId"], uncached_server_ids, 1)
+            d.addCallback(self.multifetch_result)
+            d.addErrback(self.sync_err)
+        
         d.addCallback(self.fetch_finished, fetch_res)
-        print "DLIST",dlist
+        
         #reactor.callLater(0, d.callback, None)
         return d
 
@@ -267,7 +288,6 @@ class EASMessagePart(object):
         self.data = str(self.message)
 
     def getHeaders(self, negate, *names):
-        #print "GET HEADERS",self.info["ApplicationData"], names, negate
         """
         Return a dict mapping header name to header value. If *names
         is empty, match all headers; if negate is true, return only
@@ -291,7 +311,7 @@ class EASMessagePart(object):
                         headers[header.lower()] = self.info["ApplicationData"][header_translation[header]]
                     except:
                         headers[header.lower()] = self.info["ApplicationData"][header]
-        print "Return headers",headers
+        #print "GET HEADERS",self.info["ApplicationData"], names, negate," RETURN: ",headers
         return headers
 
     def sync_result(self, sync_result):
@@ -307,15 +327,15 @@ class EASMessagePart(object):
 
     def fillDataCache(self):
         print "FILLING DATA CACHE",self.collection_id,self.info["ServerId"]
-        #d = self.async.add_operation(self.async.fetch, self.collection_id, self.info["ServerId"], 4, mimeSupport=2)
-        d = self.async.add_operation(self.async.fetch, self.collection_id, self.info["ServerId"], 1)
+        #d = self.activesync.add_operation(self.activesync.fetch, self.collection_id, self.info["ServerId"], 4, mimeSupport=2)
+        d = self.activesync.add_operation(self.activesync.fetch, self.collection_id, self.info["ServerId"], 1)
         d.addCallback(self.sync_result)
         d.addErrback(self.sync_err)
         return d
 
     def getBodyFile(self):
         "return a file-like object containing this message's body"
-        print "GET DATA",self.info
+        print "GET DATA",self.info["ServerId"]
         assert self.data != None
         return StringIO(self.data)
 
@@ -339,12 +359,12 @@ class EASMessagePart(object):
 class EASMessage(EASMessagePart):
     implements(imap4.IMessage)
 
-    def __init__(self, messageInfo, uid, flags, async, collection_id):
+    def __init__(self, messageInfo, uid, flags, activesync, collection_id):
         print "Init message with uid",uid
         self.data = None
         self.collection_id = collection_id
         self.info = messageInfo
-        self.async = async
+        self.activesync = activesync
         self.uid = uid
         self.flags = flags
 
@@ -373,14 +393,14 @@ class IMAPServerProtocol(imap4.IMAP4Server):
 
 class IMAPUserAccount(object):
     implements(imap4.IAccount)
-    def __init__(self, async):
-        self.async = async
+    def __init__(self, activesync):
+        self.activesync = activesync
         self.did_provision = False
 
     def listResponse(self, list_result):
         global global_per_user_cache
-        if self.async.username not in global_per_user_cache["mailbox"]:
-            global_per_user_cache["mailbox"][self.async.username] = {}
+        if self.activesync.username not in global_per_user_cache["mailbox"]:
+            global_per_user_cache["mailbox"][self.activesync.username] = {}
         #acceptable_folder_types = [6, 5, 1, 3, 4, 2] # figure out what these are (EAS)
         acceptable_folder_types = [1, 2]
         for folder_id, folder_info in list_result.iteritems():
@@ -391,10 +411,10 @@ class IMAPUserAccount(object):
                 folder_path = parent_info["DisplayName"]+MAILBOXDELIMITER+folder_path
                 parent_id = int(parent_info["ParentId"])
 
-            if int(folder_info["Type"]) in acceptable_folder_types and folder_path not in global_per_user_cache["mailbox"][self.async.username]:
-                global_per_user_cache["mailbox"][self.async.username][folder_path] = EASIMAPMailbox(folder_path, folder_info, self.async)
+            if int(folder_info["Type"]) in acceptable_folder_types and folder_path not in global_per_user_cache["mailbox"][self.activesync.username]:
+                global_per_user_cache["mailbox"][self.activesync.username][folder_path] = EASIMAPMailbox(folder_path, folder_info, self.activesync)
         
-        return global_per_user_cache["mailbox"][self.async.username].items()
+        return global_per_user_cache["mailbox"][self.activesync.username].items()
 
     def provision_result(self, provision_success):
         return self.listMailboxes(None, None)
@@ -404,16 +424,16 @@ class IMAPUserAccount(object):
         if not self.did_provision:
             print "Trying to re-provision EAS..."
             self.did_provision = True
-            d = self.async.add_operation(self.async.provision)
+            d = self.activesync.add_operation(self.activesync.provision)
             d.addCallback(self.provision_result)
             d.addErrback(self.listError)
             return d
         return []
 
     def listMailboxes(self, ref, wildcard):
-        if self.async.username in global_per_user_cache["mailbox"]:
-            return global_per_user_cache["mailbox"][self.async.username].items()
-        d = self.async.add_operation(self.async.folder_sync)
+        if self.activesync.username in global_per_user_cache["mailbox"]:
+            return global_per_user_cache["mailbox"][self.activesync.username].items()
+        d = self.activesync.add_operation(self.activesync.folder_sync)
         d.addCallback(self.listResponse)
         d.addErrback(self.listError)
         return d
@@ -449,14 +469,14 @@ class IMAPUserAccount(object):
         if create:
             raise imap4.MailboxException("Create not yet supported.")
 
-        if self.async.username in global_per_user_cache["mailbox"]:
-            if path in global_per_user_cache["mailbox"][self.async.username]:
-                return global_per_user_cache["mailbox"][self.async.username][path]
-            for mbpath in global_per_user_cache["mailbox"][self.async.username].keys():
+        if self.activesync.username in global_per_user_cache["mailbox"]:
+            if path in global_per_user_cache["mailbox"][self.activesync.username]:
+                return global_per_user_cache["mailbox"][self.activesync.username][path]
+            for mbpath in global_per_user_cache["mailbox"][self.activesync.username].keys():
                 # case insensitive search
                 if path.lower() == mbpath.lower():
-                    return global_per_user_cache["mailbox"][self.async.username][mbpath]
-        d = self.async.add_operation(self.async.folder_sync)
+                    return global_per_user_cache["mailbox"][self.activesync.username][mbpath]
+        d = self.activesync.add_operation(self.activesync.folder_sync)
         d.addCallback(self.listResponse)
         d.addCallback(self._getMailbox_callback, path, create)
         d.addErrback(self.listError)
@@ -493,22 +513,22 @@ class EASCredentialsChecker(object):
     credentialInterfaces = (credentials.IUsernamePassword, )
 
     def __init__(self, domain, server, device_id=None):
-        self.async = None
+        self.activesync = None
         self.domain = domain
         self.server = server
         self.device_id = device_id
 
     def requestAvatarId(self, credentials):
-        self.async = activesync.ActiveSync(self.domain, credentials.username, 
+        self.activesync = activesync.ActiveSync(self.domain, credentials.username, 
             credentials.password, self.server, True, device_id=self.device_id, verbose=False)
-        d = self.async.add_operation(self.async.get_options)
+        d = self.activesync.add_operation(self.activesync.get_options)
         d.addCallback(self.option_result, credentials.username)
         d.addErrback(self.option_err)
         return d
 
     def option_result(self, result, username):
-        # the entire async object is the avatar ID
-        return self.async
+        # the entire activesync object is the avatar ID
+        return self.activesync
 
     def option_err(self, err):
         raise credError.UnauthorizedLogin("No such user")

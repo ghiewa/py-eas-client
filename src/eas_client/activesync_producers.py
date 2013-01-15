@@ -62,12 +62,19 @@ class FolderSyncProducer(WBXMLProducer):
 
 class ItemOperationsProducer(WBXMLProducer):
 	def __init__(self, opname, collection_id, server_id, fetch_type, mimeSupport, verbose=False):
+		server_ids = []
+		if isinstance(server_id, list):
+			server_ids.extend(server_id)
+		else:
+			server_ids.append(server_id)
 		wbdict = {
-			"ItemOperations": [
-				(opname, [
+			"ItemOperations": []
+		}
+		for sid in server_ids:
+				wbdict["ItemOperations"].append((opname, [
 					("Store", "Mailbox"),
 					("CollectionId", str(collection_id), 0),
-					("ServerId", str(server_id), 0),
+					("ServerId", str(sid), 0),
 					("Options",[
 						("MIMESupport", str(mimeSupport), 0),
 						("BodyPreference", [
@@ -75,9 +82,7 @@ class ItemOperationsProducer(WBXMLProducer):
 							("TruncationSize", str(32768))
 						], 17)
 					]),
-				])
-			]
-		}
+				]))
 		wb = convert_dict_to_wbxml(wbdict, default_page_num=20)
 		return WBXMLProducer.__init__(self, wb, verbose=verbose)
 

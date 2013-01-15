@@ -108,9 +108,12 @@ class ActiveSync(object):
 		return d
 
 	def process_fetch(self, resp):
-		return resp["ItemOperations"]["Response"]["Fetch"]
+		if isinstance(resp["ItemOperations"]["Response"], list): # multifetch
+			return resp["ItemOperations"]["Response"]
+		else:
+			return resp["ItemOperations"]["Response"]["Fetch"]
 
-	def process_sync(self, resp):
+	def process_sync(self, resp, collection_id):
 		if not resp:
 			return self.collection_data[collection_id]["data"]
 			
@@ -285,7 +288,7 @@ class ActiveSync(object):
 		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
 		    SyncProducer(collectionId, sync_key, get_body, verbose=self.verbose))
 		d.addCallback(self.wbxml_response)
-		d.addCallback(self.process_sync)
+		d.addCallback(self.process_sync, collectionId)
 		d.addErrback(self.activesync_error)
 		return d
 
