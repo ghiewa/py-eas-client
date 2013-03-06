@@ -367,6 +367,15 @@ _applications = {
                 { # Page 18
                 },
                 { # Page 19
+                    "name":"DocumentLibrary",
+                    0x05: ('LinkId', None),
+                    0x06: ('DisplayName', None),
+                    0x07: ('IsFolder', None),
+                    0x08: ('CreationDate', None),
+                    0x09: ('LastModifiedDate', None),
+                    0x0a: ('IsHidden', None),
+                    0x0b: ('ContentLength', None),
+                    0x0c: ('ContentType', None),
                 },
                 { # Page 20
                     "name":"ItemOperations",

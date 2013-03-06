@@ -302,7 +302,23 @@ class ActiveSync(object):
 		    			'MS-ASProtocolVersion': [self.server_version],
 		    			'X-MS-PolicyKey': [str(self.policy_key)],
 		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
-		    ItemOperationsProducer("Fetch", collectionId, serverId, fetchType, mimeSupport, verbose=self.verbose))
+		    ItemOperationsProducer("Fetch", collectionId, serverId, fetchType, mimeSupport, store="Mailbox", verbose=self.verbose))
+		d.addCallback(self.wbxml_response)
+		d.addCallback(self.process_fetch)
+		d.addErrback(self.activesync_error)
+		return d
+
+	def fetch_link(self, linkId):
+		fetch_url = self.add_parameters(self.get_url(), {"Cmd":"ItemOperations", "User":self.username, "DeviceId":self.device_id, "DeviceType":self.device_type})
+		d = self.agent.request(
+		    'POST',
+		    fetch_url,
+		    Headers({'User-Agent': ['python-EAS-Client %s'%version], 
+		    			'Authorization': [self.authorization_header()],
+		    			'MS-ASProtocolVersion': [self.server_version],
+		    			'X-MS-PolicyKey': [str(self.policy_key)],
+		    			'Content-Type': ["application/vnd.ms-sync.wbxml"]}),
+		    ItemOperationsProducer("Fetch", None, linkId, None, None, store="DocumentLibrary", verbose=self.verbose))
 		d.addCallback(self.wbxml_response)
 		d.addCallback(self.process_fetch)
 		d.addErrback(self.activesync_error)
