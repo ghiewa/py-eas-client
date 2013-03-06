@@ -138,7 +138,11 @@ class ActiveSync(object):
 							print "ERROR: Unexpected add format:",command["Add"]
 							continue
 						self.collection_data[collection_id]["data"][server_id] = command["Add"]
-			
+		
+		if "MoreAvailable" in resp["Sync"]["Collections"]["Collection"]:
+			if self.verbose: print "MORE AVAILABLE, syncing again"
+			return self.sync(collection_id, sync_key)
+
 		return self.collection_data[collection_id]["data"]
 
 	def process_folder_sync(self, resp):
